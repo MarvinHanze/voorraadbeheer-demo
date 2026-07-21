@@ -5,6 +5,7 @@ auth_check();
 
 // --- API handling for AJAX ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    verifyCSRF();
     header('Content-Type: application/json');
     $action = $_POST['action'];
 
@@ -319,6 +320,7 @@ foreach ($products as $p) {
             </button>
         </div>
         <form id="productForm" class="p-6 space-y-4" onsubmit="return saveProduct(event)">
+            <?= csrfField() ?>
             <input type="hidden" id="formId" value="0">
             <div class="grid grid-cols-2 gap-4">
                 <div class="col-span-2">
@@ -471,6 +473,7 @@ async function saveProduct(e) {
     e.preventDefault();
     const fd = new FormData();
     fd.append('action', 'save');
+    fd.append('csrf_token', document.querySelector('#productForm [name=csrf_token]').value);
     fd.append('id', document.getElementById('formId').value);
     fd.append('name', document.getElementById('formName').value);
     fd.append('sku', document.getElementById('formSku').value);
@@ -513,6 +516,7 @@ async function confirmDelete() {
     if (!deleteId) return;
     const fd = new FormData();
     fd.append('action', 'delete');
+    fd.append('csrf_token', document.querySelector('#productForm [name=csrf_token]').value);
     fd.append('id', deleteId);
     await fetch(BASE + '/index.php', { method: 'POST', body: fd });
     location.reload();

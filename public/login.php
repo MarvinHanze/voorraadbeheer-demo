@@ -5,9 +5,11 @@ require __DIR__ . '/config.php';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verifyCSRF();
     $email = trim($_POST['email'] ?? '');
     $pass  = $_POST['password'] ?? '';
-    if ($email === 'admin@demo.nl' && $pass === 'demo123') {
+    if ($email === 'admin@demo.nl' && password_verify($pass, DEMO_PASSWORD_HASH)) {
+        session_regenerate_id(true);
         $_SESSION['user'] = $email;
         seed_data($pdo);
         header('Location: ' . BASE . '/index.php');
@@ -43,6 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <form method="POST" class="space-y-4">
+            <?= csrfField() ?>
             <div>
                 <label for="email" class="block text-sm font-medium text-slate-700 mb-1">E-mail</label>
                 <input type="email" id="email" name="email" required value="admin@demo.nl"

@@ -7,6 +7,7 @@ define('DB_USER', 'mysql');
 define('DB_PASS', '23ns613Dyo1vgiAOQCt2ABFZzujOsxuyROvqNk4unUoZxWpwN9nIPrMNTt4QFkzG');
 define('BASE', '/voorraadbeheer');
 define('DEMO_RESET_MINUTES', 30);
+define('DEMO_PASSWORD_HASH', '$2y$12$xP5XI843YDt2Ow1j0sPPvee9FRk2XYYepLdJPlYeh65Gv.B/RKtES');
 
 try {
     $pdo = new PDO(
@@ -147,4 +148,26 @@ function auth_check(): void
 function e(string $s): string
 {
     return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function generateCSRFToken(): string
+{
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+function csrfField(): string
+{
+    return '<input type="hidden" name="csrf_token" value="' . e(generateCSRFToken()) . '">';
+}
+
+function verifyCSRF(): void
+{
+    $token = $_POST['csrf_token'] ?? '';
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $token)) {
+        http_response_code(403);
+        exit('Ongeldige aanvraag');
+    }
 }
