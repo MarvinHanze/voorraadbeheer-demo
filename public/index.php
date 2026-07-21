@@ -1,535 +1,319 @@
 <?php
 declare(strict_types=1);
 require __DIR__ . '/config.php';
+require __DIR__ . '/partials.php';
 auth_check();
 
-// --- API handling for AJAX ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+$user = currentUser();
+$message = '';
+$msgType = 'success';
+
+// ── Trigger-based inkoop: genereer een inkoopvoorstel (magic link) ─────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'create_proposal') {
     verifyCSRF();
-    header('Content-Type: application/json');
-    $action = $_POST['action'];
-
-    if ($action === 'save') {
-        $id       = (int) ($_POST['id'] ?? 0);
-        $name     = trim($_POST['name'] ?? '');
-        $sku      = trim($_POST['sku'] ?? '');
-        $category = trim($_POST['category'] ?? '');
-        $qty      = max(0, (int) ($_POST['quantity'] ?? 0));
-        $minStock = max(0, (int) ($_POST['min_stock'] ?? 5));
-        $location = trim($_POST['location'] ?? '');
-        $price    = max(0, (float) ($_POST['unit_price'] ?? 0));
-        $status   = $_POST['status'] ?? 'actief';
-
-        if ($name === '' || $sku === '' || $category === '') {
-            echo json_encode(['ok' => false, 'error' => 'Verplichte velden ontbreken']);
-            exit;
+    if (!canManageProducts($user['role'])) {
+        $message = 'Je rol (' . roleLabel($user['role']) . ') mag geen inkoopvoorstellen genereren.';
+        $msgType = 'error';
+    } else {
+        $productId = (int) ($_POST['product_id'] ?? 0);
+        $stmt = $pdo->prepare('SELECT * FROM voorraad_products WHERE id = ?');
+        $stmt->execute([$productId]);
+        $product = $stmt->fetch();
+        if (!$product) {
+            $message = 'Artikel niet gevonden.';
+            $msgType = 'error';
+        } else {
+            $shortage = (int) $product['min_stock'] * 2 - (int) $product['quantity'];
+            $proposedQty = (int) $product['reorder_qty'] > 0 ? (int) $product['reorder_qty'] : max(1, $shortage);
+            $result = createPurchaseProposal($pdo, $product, $proposedQty);
+            $message = 'Inkoopvoorstel gegenereerd voor "' . $product['name'] . '" — gesimuleerde magic link verzonden naar '
+                . $result['to_email'] . ' (DEMO: geen echte e-mail). Bekijk het bij Inkoopvoorstellen.';
         }
-
-        $allowedStatus = ['actief', 'uitverkocht', 'stopgezet'];
-        if (!in_array($status, $allowedStatus, true)) {
-            $status = 'actief';
-        }
-
-        if ($qty < $minStock && $status === 'actief') {
-            $status = 'actief'; // keep actief, warning shown in UI
-        }
-        if ($qty === 0 && $status === 'actief') {
-            $status = 'uitverkocht';
-        }
-
-        try {
-            if ($id > 0) {
-                $stmt = $pdo->prepare("UPDATE voorraad_products SET name=?, sku=?, category=?, quantity=?, min_stock=?, location=?, unit_price=?, status=? WHERE id=?");
-                $stmt->execute([$name, $sku, $category, $qty, $minStock, $location, $price, $status, $id]);
-            } else {
-                $stmt = $pdo->prepare("INSERT INTO voorraad_products (name, sku, category, quantity, min_stock, location, unit_price, status) VALUES (?,?,?,?,?,?,?,?)");
-                $stmt->execute([$name, $sku, $category, $qty, $minStock, $location, $price, $status]);
-            }
-            echo json_encode(['ok' => true]);
-        } catch (PDOException $e) {
-            if ($e->getCode() === '23000') {
-                echo json_encode(['ok' => false, 'error' => 'SKU bestaat al']);
-            } else {
-                echo json_encode(['ok' => false, 'error' => 'Database fout']);
-            }
-        }
-        exit;
     }
-
-    if ($action === 'delete') {
-        $id = (int) ($_POST['id'] ?? 0);
-        if ($id > 0) {
-            $stmt = $pdo->prepare("DELETE FROM voorraad_products WHERE id = ?");
-            $stmt->execute([$id]);
-        }
-        echo json_encode(['ok' => true]);
-        exit;
-    }
-
-    echo json_encode(['ok' => false, 'error' => 'Onbekende actie']);
-    exit;
 }
 
-// --- Fetch data ---
-$products = $pdo->query("
-    SELECT p.*, 
-           COALESCE(SUM(CASE WHEN m.type = 'in' THEN m.quantity ELSE 0 END), 0) as total_in,
-           COALESCE(SUM(CASE WHEN m.type = 'uit' THEN m.quantity ELSE 0 END), 0) as total_out
-    FROM voorraad_products p
-    LEFT JOIN voorraad_movements m ON m.product_id = p.id
-    GROUP BY p.id
-    ORDER BY p.name
-")->fetchAll();
+// ── Basisdata ────────────────────────────────────────────────────────────
+$products = $pdo->query('SELECT * FROM voorraad_products ORDER BY name')->fetchAll();
 
-$totalProducts  = count($products);
-$lowStock       = 0;
-$totalValue     = 0.0;
-$locations      = [];
-$categories     = [];
+$totalProducts   = count($products);
+$lowStock        = 0;
+$overStock       = 0;
+$totalValueSale  = 0.0;
+$totalValueBuy   = 0.0;
+$locations       = [];
+$categories      = [];
 
 foreach ($products as $p) {
-    if ($p['quantity'] < $p['min_stock']) {
+    $qty = (int) $p['quantity'];
+    if ($qty < (int) $p['min_stock']) {
         $lowStock++;
     }
-    $totalValue += (float) $p['quantity'] * (float) $p['unit_price'];
-    $locations[$p['location']]  = true;
+    if ((int) $p['max_stock'] > 0 && $qty > (int) $p['max_stock']) {
+        $overStock++;
+    }
+    $totalValueSale += $qty * (float) $p['unit_price'];
+    $totalValueBuy  += $qty * (float) $p['purchase_price'];
+    if ($p['location'] !== '') {
+        $locations[$p['location']] = true;
+    }
     $categories[$p['category']] = true;
 }
+
+// ── Voorraadwaarderapport: top artikelen op basis van (aantal x inkoopprijs) ─
+$valueReport = $products;
+usort($valueReport, function ($a, $b) {
+    return ($b['quantity'] * $b['purchase_price']) <=> ($a['quantity'] * $a['purchase_price']);
+});
+$valueReport = array_slice($valueReport, 0, 8);
+
+// ── Omloopsnelheid (laatste 90 dagen, benadering t.o.v. huidige voorraad) ──
+$turnoverRows = $pdo->query("
+    SELECT p.id, p.name, p.sku, p.quantity,
+           COALESCE(SUM(CASE WHEN m.type = 'uit' AND m.reason = 'verkoop' AND m.created_at >= (NOW() - INTERVAL 90 DAY) THEN m.quantity ELSE 0 END), 0) AS sold_qty
+    FROM voorraad_products p
+    LEFT JOIN voorraad_movements m ON m.product_id = p.id
+    GROUP BY p.id, p.name, p.sku, p.quantity
+")->fetchAll();
+
+$turnoverTotal = 0.0;
+$turnoverCount = 0;
+foreach ($turnoverRows as &$t) {
+    $avgStockProxy = max(1, (int) $t['quantity']);
+    $t['turnover'] = round(((int) $t['sold_qty']) / $avgStockProxy, 2);
+    if ((int) $t['sold_qty'] > 0) {
+        $turnoverTotal += $t['turnover'];
+        $turnoverCount++;
+    }
+}
+unset($t);
+usort($turnoverRows, fn($a, $b) => $b['turnover'] <=> $a['turnover']);
+$topTurnover  = array_slice($turnoverRows, 0, 5);
+$avgTurnover  = $turnoverCount > 0 ? round($turnoverTotal / $turnoverCount, 2) : 0.0;
+
+// ── Top X derving/verloren artikelen ────────────────────────────────────────
+$topDerving = $pdo->query("
+    SELECT p.id, p.name, p.sku, p.category,
+           SUM(m.quantity) AS lost_qty,
+           SUM(m.quantity * p.purchase_price) AS lost_value
+    FROM voorraad_movements m
+    JOIN voorraad_products p ON p.id = m.product_id
+    WHERE m.reason = 'derving'
+    GROUP BY p.id, p.name, p.sku, p.category
+    ORDER BY lost_value DESC
+    LIMIT 5
+")->fetchAll();
+
+$totalDerving = $pdo->query("
+    SELECT COALESCE(SUM(m.quantity), 0) AS qty, COALESCE(SUM(m.quantity * p.purchase_price), 0) AS value
+    FROM voorraad_movements m JOIN voorraad_products p ON p.id = m.product_id
+    WHERE m.reason = 'derving'
+")->fetch();
+
+// ── Laag/overvoorraad-lijst (voor proactieve notificaties + magic link) ────
+$lowStockProducts = array_values(array_filter($products, fn($p) => (int) $p['quantity'] < (int) $p['min_stock']));
+
+// ── Recente mutaties ─────────────────────────────────────────────────────
+$recentMovements = $pdo->query("
+    SELECT m.*, p.name AS product_name, p.sku
+    FROM voorraad_movements m
+    JOIN voorraad_products p ON p.id = m.product_id
+    ORDER BY m.id DESC
+    LIMIT 8
+")->fetchAll();
+
+// ── Openstaande inkoopvoorstellen ───────────────────────────────────────────
+$openProposals = (int) $pdo->query("SELECT COUNT(*) FROM voorraad_email_log WHERE status = 'verzonden'")->fetchColumn();
+
+renderPageStart('Dashboard', 'index');
+renderFlash($message, $msgType);
 ?>
-<!DOCTYPE html>
-<html lang="nl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voorraadbeheer Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = { theme: { extend: { colors: { brand: '#f59e0b' } } } }
-    </script>
-    <style>
-        .modal-overlay { background: rgba(0,0,0,0.4); }
-        [x-cloak] { display: none !important; }
-    </style>
-</head>
-<body class="bg-slate-50 min-h-screen">
 
-<!-- Nav -->
-<nav class="bg-white border-b border-slate-200 sticky top-0 z-30">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
-        <div class="flex items-center gap-2.5">
-            <div class="w-8 h-8 bg-brand rounded-lg flex items-center justify-center">
-                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
-                </svg>
-            </div>
-            <span class="font-bold text-slate-800">Voorraadbeheer</span>
-        </div>
-        <a href="<?= e(BASE) ?>/logout.php" class="text-sm text-slate-500 hover:text-slate-700 transition-colors flex items-center gap-1.5">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
-            </svg>
-            Uitloggen
-        </a>
+<!-- ── Proactieve notificaties ─────────────────────────────────────────── -->
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+    <div class="flex items-center gap-3 px-4 py-3 rounded-lg border <?= $lowStock > 0 ? 'bg-red-50 border-red-200 text-red-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800' ?>">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+        <p class="text-sm"><strong><?= $lowStock ?></strong> artikel<?= $lowStock === 1 ? '' : 'en' ?> onder minimumvoorraad — <a href="<?= BASE ?>/inkoop.php" class="underline">bekijk inkoopvoorstellen</a></p>
     </div>
-</nav>
-
-<main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-
-    <!-- Stat cards -->
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center">
-                    <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
-                    </svg>
-                </div>
-                <div>
-                    <p class="text-xs text-slate-500">Totaal Producten</p>
-                    <p class="text-xl font-bold text-slate-800"><?= $totalProducts ?></p>
-                </div>
-            </div>
-        </div>
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-red-50 rounded-lg flex items-center justify-center">
-                    <svg class="w-5 h-5 text-red-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z"/>
-                    </svg>
-                </div>
-                <div>
-                    <p class="text-xs text-slate-500">Lager Voorraad</p>
-                    <p class="text-xl font-bold text-slate-800"><?= $lowStock ?></p>
-                </div>
-            </div>
-        </div>
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-green-50 rounded-lg flex items-center justify-center">
-                    <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"/>
-                    </svg>
-                </div>
-                <div>
-                    <p class="text-xs text-slate-500">Waarde Voorraad</p>
-                    <p class="text-xl font-bold text-slate-800">&euro; <?= number_format($totalValue, 2, ',', '.') ?></p>
-                </div>
-            </div>
-        </div>
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-purple-50 rounded-lg flex items-center justify-center">
-                    <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
-                    </svg>
-                </div>
-                <div>
-                    <p class="text-xs text-slate-500">Aantal Locaties</p>
-                    <p class="text-xl font-bold text-slate-800"><?= count($locations) ?></p>
-                </div>
-            </div>
-        </div>
+    <div class="flex items-center gap-3 px-4 py-3 rounded-lg border <?= $overStock > 0 ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-slate-50 border-slate-200 text-slate-600' ?>">
+        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 11l7-7 7 7M5 19l7-7 7 7"/></svg>
+        <p class="text-sm"><strong><?= $overStock ?></strong> artikel<?= $overStock === 1 ? '' : 'en' ?> boven de ingestelde <?= termTooltip('overvoorraadgrens', 'Het maximum aantal stuks dat voor dit artikel als wenselijk is ingesteld (max_stock). Boven deze grens is er sprake van overvoorraad.') ?></p>
     </div>
+</div>
 
-    <!-- Toolbar -->
-    <div class="bg-white rounded-xl shadow-sm border border-slate-200 mb-6">
-        <div class="p-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
-            <div class="flex flex-col sm:flex-row gap-3 flex-1 w-full sm:w-auto">
-                <input type="text" id="search" placeholder="Zoek producten..."
-                    class="flex-1 min-w-0 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                <select id="filterCategory"
-                    class="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                    <option value="">Alle categorieën</option>
-                    <?php foreach (array_keys($categories) as $cat): ?>
-                        <option value="<?= e($cat) ?>"><?= e($cat) ?></option>
-                    <?php endforeach; ?>
-                </select>
-                <select id="filterLocation"
-                    class="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                    <option value="">Alle locaties</option>
-                    <?php foreach (array_keys($locations) as $loc): ?>
-                        <option value="<?= e($loc) ?>"><?= e($loc) ?></option>
-                    <?php endforeach; ?>
-                </select>
-                <select id="filterStatus"
-                    class="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                    <option value="">Alle statussen</option>
-                    <option value="actief">Actief</option>
-                    <option value="uitverkocht">Uitverkocht</option>
-                    <option value="stopgezet">Stopgezet</option>
-                </select>
-            </div>
-            <button onclick="openModal()"
-                class="bg-brand hover:bg-amber-600 text-white font-medium px-4 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 whitespace-nowrap">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-                </svg>
-                Product toevoegen
-            </button>
+<!-- ── Stat cards ─────────────────────────────────────────────────────── -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+    <div class="hz-card hz-card--stat">
+        <p class="hz-card__label">Totaal Artikelen</p>
+        <p class="hz-card__value"><?= $totalProducts ?></p>
+        <p class="text-sm text-slate-500 mt-1"><?= count($categories) ?> categorieën</p>
+    </div>
+    <div class="hz-card hz-card--stat">
+        <p class="hz-card__label">Lage Voorraad</p>
+        <p class="hz-card__value <?= $lowStock > 0 ? 'text-red-600' : '' ?>"><?= $lowStock ?></p>
+        <p class="text-sm text-slate-500 mt-1"><?= $openProposals ?> openstaand inkoopvoorstel<?= $openProposals === 1 ? '' : 'len' ?></p>
+    </div>
+    <div class="hz-card hz-card--stat">
+        <p class="hz-card__label"><?= termTooltip('Voorraadwaarde', 'Som van aantal × inkoopprijs, over alle artikelen — het "Voorraadwaarderapport".') ?></p>
+        <p class="hz-card__value"><?= nl_euro($totalValueBuy) ?></p>
+        <p class="text-sm text-slate-500 mt-1">verkoopwaarde <?= nl_euro($totalValueSale) ?></p>
+    </div>
+    <div class="hz-card hz-card--stat">
+        <p class="hz-card__label"><?= termTooltip('Omloopsnelheid', 'Gemiddeld aantal keer dat de voorraad van een artikel de afgelopen 90 dagen is "omgezet" via verkoop, t.o.v. de huidige voorraadpositie.') ?></p>
+        <p class="hz-card__value"><?= number_format($avgTurnover, 2, ',', '.') ?></p>
+        <p class="text-sm text-slate-500 mt-1"><?= count($locations) ?> magazijnlocaties</p>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+    <!-- ── Voorraadwaarderapport ──────────────────────────────────────── -->
+    <div class="hz-card">
+        <div class="hz-card__header">
+            <h2 class="text-base font-semibold text-slate-900">Voorraadwaarderapport (top 8)</h2>
         </div>
-
-        <!-- Table -->
+        <p class="text-sm text-slate-500 mb-3">Artikelen met de hoogste voorraadwaarde (aantal × inkoopprijs).</p>
         <div class="overflow-x-auto">
-            <table class="w-full text-sm">
-                <thead>
-                    <tr class="border-t border-slate-200 bg-slate-50">
-                        <th class="text-left px-4 py-3 font-medium text-slate-600">Product</th>
-                        <th class="text-left px-4 py-3 font-medium text-slate-600">SKU</th>
-                        <th class="text-left px-4 py-3 font-medium text-slate-600 hidden md:table-cell">Categorie</th>
-                        <th class="text-right px-4 py-3 font-medium text-slate-600">Voorraad</th>
-                        <th class="text-right px-4 py-3 font-medium text-slate-600 hidden lg:table-cell">Min.</th>
-                        <th class="text-left px-4 py-3 font-medium text-slate-600 hidden lg:table-cell">Locatie</th>
-                        <th class="text-right px-4 py-3 font-medium text-slate-600 hidden sm:table-cell">Prijs</th>
-                        <th class="text-center px-4 py-3 font-medium text-slate-600">Status</th>
-                        <th class="text-right px-4 py-3 font-medium text-slate-600">Acties</th>
+            <table class="hz-table">
+                <thead><tr><th>Artikel</th><th>Voorraadpositie</th><th>Waarde</th></tr></thead>
+                <tbody>
+                <?php foreach ($valueReport as $v): $val = $v['quantity'] * $v['purchase_price']; ?>
+                    <tr>
+                        <td>
+                            <p class="font-medium text-slate-800"><?= e($v['name']) ?></p>
+                            <p class="text-xs text-slate-400 font-mono"><?= e($v['sku']) ?></p>
+                        </td>
+                        <td><?= (int) $v['quantity'] ?> st.</td>
+                        <td class="font-semibold"><?= nl_euro((float) $val) ?></td>
                     </tr>
-                </thead>
-                <tbody id="productTable">
-                    <?php foreach ($products as $p):
-                        $low = $p['quantity'] < $p['min_stock'];
-                    ?>
-                    <tr class="border-t border-slate-100 hover:bg-slate-50 transition-colors product-row"
-                        data-name="<?= e(strtolower($p['name'])) ?>"
-                        data-sku="<?= e(strtolower($p['sku'])) ?>"
-                        data-category="<?= e($p['category']) ?>"
-                        data-location="<?= e($p['location']) ?>"
-                        data-status="<?= e($p['status']) ?>">
-                        <td class="px-4 py-3 font-medium text-slate-800"><?= e($p['name']) ?></td>
-                        <td class="px-4 py-3 text-slate-500 font-mono text-xs"><?= e($p['sku']) ?></td>
-                        <td class="px-4 py-3 text-slate-600 hidden md:table-cell">
-                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
-                                <?= e($p['category']) ?>
-                            </span>
-                        </td>
-                        <td class="px-4 py-3 text-right font-medium <?= $low ? 'text-red-600' : 'text-slate-800' ?>">
-                            <?= $p['quantity'] ?>
-                            <?php if ($low): ?>
-                                <svg class="w-3.5 h-3.5 inline ml-1 text-red-500" fill="currentColor" viewBox="0 0 20 20">
-                                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
-                                </svg>
-                            <?php endif; ?>
-                        </td>
-                        <td class="px-4 py-3 text-right text-slate-500 hidden lg:table-cell"><?= $p['min_stock'] ?></td>
-                        <td class="px-4 py-3 text-slate-600 hidden lg:table-cell"><?= e($p['location']) ?></td>
-                        <td class="px-4 py-3 text-right text-slate-800 hidden sm:table-cell">&euro; <?= number_format((float)$p['unit_price'], 2, ',', '.') ?></td>
-                        <td class="px-4 py-3 text-center">
-                            <?php
-                                $badgeClass = match($p['status']) {
-                                    'actief'    => 'bg-green-50 text-green-700',
-                                    'uitverkocht' => 'bg-red-50 text-red-700',
-                                    'stopgezet' => 'bg-slate-100 text-slate-500',
-                                    default     => 'bg-slate-100 text-slate-700',
-                                };
-                            ?>
-                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium <?= $badgeClass ?>">
-                                <?= e(ucfirst($p['status'])) ?>
-                            </span>
-                        </td>
-                        <td class="px-4 py-3 text-right">
-                            <button onclick='editProduct(<?= json_encode($p) ?>)'
-                                class="text-slate-400 hover:text-brand transition-colors p-1" title="Bewerken">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
-                                </svg>
-                            </button>
-                            <button onclick="deleteProduct(<?= (int) $p['id'] ?>, '<?= e($p['name']) ?>')"
-                                class="text-slate-400 hover:text-red-600 transition-colors p-1" title="Verwijderen">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                </svg>
-                            </button>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
+                <?php endforeach; ?>
+                <?php if (!$valueReport): ?>
+                    <tr><td colspan="3" class="text-center text-slate-400">Geen artikelen.</td></tr>
+                <?php endif; ?>
                 </tbody>
             </table>
         </div>
     </div>
-</main>
 
-<!-- Modal -->
-<div id="modal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-overlay">
-    <div class="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200">
-            <h2 id="modalTitle" class="text-lg font-semibold text-slate-800">Product toevoegen</h2>
-            <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 transition-colors">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
-                </svg>
-            </button>
+    <!-- ── Omloopsnelheid top 5 ───────────────────────────────────────── -->
+    <div class="hz-card">
+        <div class="hz-card__header">
+            <h2 class="text-base font-semibold text-slate-900">Omloopsnelheid (top 5, laatste 90 dagen)</h2>
         </div>
-        <form id="productForm" class="p-6 space-y-4" onsubmit="return saveProduct(event)">
-            <?= csrfField() ?>
-            <input type="hidden" id="formId" value="0">
-            <div class="grid grid-cols-2 gap-4">
-                <div class="col-span-2">
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Naam *</label>
-                    <input type="text" id="formName" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">SKU *</label>
-                    <input type="text" id="formSku" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Categorie *</label>
-                    <input type="text" id="formCategory" required list="categoryList" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                    <datalist id="categoryList">
-                        <?php foreach (array_keys($categories) as $cat): ?>
-                            <option value="<?= e($cat) ?>">
-                        <?php endforeach; ?>
-                    </datalist>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Voorraad</label>
-                    <input type="number" id="formQuantity" min="0" value="0" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Min. Voorraad</label>
-                    <input type="number" id="formMinStock" min="0" value="5" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Locatie</label>
-                    <input type="text" id="formLocation" list="locationList" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                    <datalist id="locationList">
-                        <?php foreach (array_keys($locations) as $loc): ?>
-                            <option value="<?= e($loc) ?>">
-                        <?php endforeach; ?>
-                    </datalist>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Prijs (€)</label>
-                    <input type="number" id="formPrice" min="0" step="0.01" value="0" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Status</label>
-                    <select id="formStatus" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand">
-                        <option value="actief">Actief</option>
-                        <option value="uitverkocht">Uitverkocht</option>
-                        <option value="stopgezet">Stopgezet</option>
-                    </select>
-                </div>
-            </div>
-            <div id="formError" class="hidden bg-red-50 text-red-700 text-sm rounded-lg px-4 py-3"></div>
-            <div class="flex justify-end gap-3 pt-2">
-                <button type="button" onclick="closeModal()" class="px-4 py-2 border border-slate-300 rounded-lg text-sm text-slate-700 hover:bg-slate-50 transition-colors">Annuleren</button>
-                <button type="submit" class="bg-brand hover:bg-amber-600 text-white font-medium px-4 py-2 rounded-lg text-sm transition-colors">Opslaan</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- Delete confirm -->
-<div id="deleteModal" class="fixed inset-0 z-50 hidden items-center justify-center p-4 modal-overlay">
-    <div class="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
-        <div class="flex items-center gap-3 mb-4">
-            <div class="w-10 h-10 bg-red-50 rounded-full flex items-center justify-center">
-                <svg class="w-5 h-5 text-red-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                </svg>
-            </div>
-            <div>
-                <h3 class="font-semibold text-slate-800">Product verwijderen</h3>
-                <p id="deleteName" class="text-sm text-slate-500"></p>
-            </div>
-        </div>
-        <p class="text-sm text-slate-600 mb-6">Weet je zeker dat je dit product wilt verwijderen? Dit kan niet ongedaan worden gemaakt.</p>
-        <div class="flex justify-end gap-3">
-            <button onclick="closeDeleteModal()" class="px-4 py-2 border border-slate-300 rounded-lg text-sm text-slate-700 hover:bg-slate-50 transition-colors">Annuleren</button>
-            <button id="confirmDeleteBtn" class="bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-2 rounded-lg text-sm transition-colors">Verwijderen</button>
+        <p class="text-sm text-slate-500 mb-3">Verkochte stuks t.o.v. huidige voorraadpositie.</p>
+        <div class="overflow-x-auto">
+            <table class="hz-table">
+                <thead><tr><th>Artikel</th><th>Verkocht</th><th>Omloopsnelheid</th></tr></thead>
+                <tbody>
+                <?php foreach ($topTurnover as $t): ?>
+                    <tr>
+                        <td>
+                            <p class="font-medium text-slate-800"><?= e($t['name']) ?></p>
+                            <p class="text-xs text-slate-400 font-mono"><?= e($t['sku']) ?></p>
+                        </td>
+                        <td><?= (int) $t['sold_qty'] ?> st.</td>
+                        <td class="font-semibold"><?= number_format((float) $t['turnover'], 2, ',', '.') ?>x</td>
+                    </tr>
+                <?php endforeach; ?>
+                <?php if (!$topTurnover): ?>
+                    <tr><td colspan="3" class="text-center text-slate-400">Nog geen verkoopmutaties.</td></tr>
+                <?php endif; ?>
+                </tbody>
+            </table>
         </div>
     </div>
 </div>
 
-<script>
-const BASE = '<?= e(BASE) ?>';
-let deleteId = null;
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+    <!-- ── Top derving/verloren artikelen ─────────────────────────────── -->
+    <div class="hz-card border-l-4 border-red-400">
+        <div class="hz-card__header">
+            <h2 class="text-base font-semibold text-slate-900">Top derving/verloren artikelen</h2>
+        </div>
+        <p class="text-sm text-slate-500 mb-3">
+            Totale derving: <strong><?= (int) $totalDerving['qty'] ?> stuks</strong>,
+            waarde <strong><?= nl_euro((float) $totalDerving['value']) ?></strong>.
+        </p>
+        <?php if (!$topDerving): ?>
+            <p class="text-sm text-slate-400">Geen derving geregistreerd.</p>
+        <?php else: ?>
+            <ul class="divide-y divide-slate-100 text-sm">
+                <?php foreach ($topDerving as $d): ?>
+                <li class="py-2 flex items-center justify-between gap-2">
+                    <div>
+                        <p class="font-medium text-slate-800"><?= e($d['name']) ?></p>
+                        <p class="text-xs text-slate-400"><?= e($d['category']) ?> · <?= e($d['sku']) ?></p>
+                    </div>
+                    <div class="text-right">
+                        <p class="font-semibold text-red-600"><?= (int) $d['lost_qty'] ?> st.</p>
+                        <p class="text-xs text-slate-400"><?= nl_euro((float) $d['lost_value']) ?></p>
+                    </div>
+                </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+    </div>
 
-// --- Search & Filter ---
-document.getElementById('search').addEventListener('input', applyFilters);
-document.getElementById('filterCategory').addEventListener('change', applyFilters);
-document.getElementById('filterLocation').addEventListener('change', applyFilters);
-document.getElementById('filterStatus').addEventListener('change', applyFilters);
+    <!-- ── Lage voorraad + trigger-based inkoopvoorstel ────────────────── -->
+    <div class="hz-card border-l-4 border-amber-400">
+        <div class="hz-card__header">
+            <h2 class="text-base font-semibold text-slate-900">Lage voorraad — actie vereist</h2>
+        </div>
+        <?php if (!$lowStockProducts): ?>
+            <p class="text-sm text-slate-400">Geen artikelen onder de minimumvoorraad.</p>
+        <?php else: ?>
+            <ul class="divide-y divide-slate-100 text-sm">
+                <?php foreach (array_slice($lowStockProducts, 0, 6) as $p): ?>
+                <li class="py-2 flex items-center justify-between gap-2">
+                    <div>
+                        <p class="font-medium text-slate-800"><?= e($p['name']) ?></p>
+                        <p class="text-xs text-slate-400"><?= (int) $p['quantity'] ?> / min. <?= (int) $p['min_stock'] ?> · <?= e($p['location']) ?></p>
+                    </div>
+                    <?php if (canManageProducts($user['role'])): ?>
+                    <form method="post" class="shrink-0">
+                        <?= csrfField() ?>
+                        <input type="hidden" name="action" value="create_proposal">
+                        <input type="hidden" name="product_id" value="<?= (int) $p['id'] ?>">
+                        <button type="submit" class="hz-btn hz-btn--secondary" style="padding:.35rem .7rem;font-size:.78rem;">Inkoopvoorstel</button>
+                    </form>
+                    <?php else: ?>
+                        <span class="hz-badge hz-badge--gray">Alleen-lezen</span>
+                    <?php endif; ?>
+                </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+    </div>
+</div>
 
-function applyFilters() {
-    const q = document.getElementById('search').value.toLowerCase();
-    const cat = document.getElementById('filterCategory').value;
-    const loc = document.getElementById('filterLocation').value;
-    const stat = document.getElementById('filterStatus').value;
+<!-- ── Recente mutaties ───────────────────────────────────────────────── -->
+<div class="hz-card mb-8">
+    <div class="hz-card__header">
+        <h2 class="text-base font-semibold text-slate-900">Recente voorraadmutaties</h2>
+        <a href="<?= BASE ?>/mutaties.php" class="text-sm text-brand-700 hover:underline">Alle mutaties &rarr;</a>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="hz-table">
+            <thead><tr><th>Artikel</th><th>Type</th><th>Reden</th><th>Aantal</th><th>Door</th><th>Datum</th></tr></thead>
+            <tbody>
+            <?php foreach ($recentMovements as $m): ?>
+                <tr>
+                    <td><?= e($m['product_name']) ?> <span class="text-xs text-slate-400 font-mono"><?= e($m['sku']) ?></span></td>
+                    <td><?= movementTypeBadge($m['type']) ?></td>
+                    <td><span class="hz-badge <?= movementReasonBadgeClass($m['reason']) ?>"><?= e(movementReasonLabel($m['reason'])) ?></span></td>
+                    <td><?= (int) $m['quantity'] ?></td>
+                    <td><?= e($m['actor'] ?: '-') ?></td>
+                    <td class="text-slate-400"><?= nl_datum($m['created_at']) ?></td>
+                </tr>
+            <?php endforeach; ?>
+            <?php if (!$recentMovements): ?>
+                <tr><td colspan="6" class="text-center text-slate-400">Nog geen mutaties.</td></tr>
+            <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+</div>
 
-    document.querySelectorAll('.product-row').forEach(row => {
-        const name = row.dataset.name;
-        const sku = row.dataset.sku;
-        const matchSearch = !q || name.includes(q) || sku.includes(q);
-        const matchCat = !cat || row.dataset.category === cat;
-        const matchLoc = !loc || row.dataset.location === loc;
-        const matchStat = !stat || row.dataset.status === stat;
-        row.style.display = (matchSearch && matchCat && matchLoc && matchStat) ? '' : 'none';
-    });
-}
+<footer class="mt-4 pb-8 text-center text-sm text-slate-400">
+    Voorraadbeheer Demo &middot; PHP 8.2 + Apache + MySQL &middot; alle inkoopvoorstellen/e-mails/synchronisaties zijn gesimuleerd (geen echte externe koppelingen)
+</footer>
 
-// --- Modal ---
-function openModal() {
-    document.getElementById('modalTitle').textContent = 'Product toevoegen';
-    document.getElementById('formId').value = '0';
-    document.getElementById('formName').value = '';
-    document.getElementById('formSku').value = '';
-    document.getElementById('formCategory').value = '';
-    document.getElementById('formQuantity').value = '0';
-    document.getElementById('formMinStock').value = '5';
-    document.getElementById('formLocation').value = '';
-    document.getElementById('formPrice').value = '0';
-    document.getElementById('formStatus').value = 'actief';
-    document.getElementById('formError').classList.add('hidden');
-    const m = document.getElementById('modal');
-    m.classList.remove('hidden');
-    m.classList.add('flex');
-}
-
-function closeModal() {
-    const m = document.getElementById('modal');
-    m.classList.add('hidden');
-    m.classList.remove('flex');
-}
-
-function editProduct(p) {
-    document.getElementById('modalTitle').textContent = 'Product bewerken';
-    document.getElementById('formId').value = p.id;
-    document.getElementById('formName').value = p.name;
-    document.getElementById('formSku').value = p.sku;
-    document.getElementById('formCategory').value = p.category;
-    document.getElementById('formQuantity').value = p.quantity;
-    document.getElementById('formMinStock').value = p.min_stock;
-    document.getElementById('formLocation').value = p.location;
-    document.getElementById('formPrice').value = p.unit_price;
-    document.getElementById('formStatus').value = p.status;
-    document.getElementById('formError').classList.add('hidden');
-    const m = document.getElementById('modal');
-    m.classList.remove('hidden');
-    m.classList.add('flex');
-}
-
-async function saveProduct(e) {
-    e.preventDefault();
-    const fd = new FormData();
-    fd.append('action', 'save');
-    fd.append('csrf_token', document.querySelector('#productForm [name=csrf_token]').value);
-    fd.append('id', document.getElementById('formId').value);
-    fd.append('name', document.getElementById('formName').value);
-    fd.append('sku', document.getElementById('formSku').value);
-    fd.append('category', document.getElementById('formCategory').value);
-    fd.append('quantity', document.getElementById('formQuantity').value);
-    fd.append('min_stock', document.getElementById('formMinStock').value);
-    fd.append('location', document.getElementById('formLocation').value);
-    fd.append('unit_price', document.getElementById('formPrice').value);
-    fd.append('status', document.getElementById('formStatus').value);
-
-    const res = await fetch(BASE + '/index.php', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (data.ok) {
-        location.reload();
-    } else {
-        const err = document.getElementById('formError');
-        err.textContent = data.error || 'Er is een fout opgetreden';
-        err.classList.remove('hidden');
-    }
-}
-
-// --- Delete ---
-function deleteProduct(id, name) {
-    deleteId = id;
-    document.getElementById('deleteName').textContent = name;
-    const m = document.getElementById('deleteModal');
-    m.classList.remove('hidden');
-    m.classList.add('flex');
-    document.getElementById('confirmDeleteBtn').onclick = confirmDelete;
-}
-
-function closeDeleteModal() {
-    const m = document.getElementById('deleteModal');
-    m.classList.add('hidden');
-    m.classList.remove('flex');
-    deleteId = null;
-}
-
-async function confirmDelete() {
-    if (!deleteId) return;
-    const fd = new FormData();
-    fd.append('action', 'delete');
-    fd.append('csrf_token', document.querySelector('#productForm [name=csrf_token]').value);
-    fd.append('id', deleteId);
-    await fetch(BASE + '/index.php', { method: 'POST', body: fd });
-    location.reload();
-}
-
-// Close modals on Escape
-document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-        closeModal();
-        closeDeleteModal();
-    }
-});
-</script>
-
-</body>
-</html>
+<?php renderPageEnd(); ?>
