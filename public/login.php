@@ -9,6 +9,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $pass  = $_POST['password'] ?? '';
     if ($email === 'admin@demo.nl' && $pass === 'demo123') {
         $_SESSION['user'] = $email;
+        seed_data($pdo);
         header('Location: ' . BASE . '/index.php');
         exit;
     }
