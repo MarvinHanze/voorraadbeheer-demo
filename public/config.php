@@ -1,6 +1,34 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * Fouten nooit rauw (met stacktrace/pad-info) naar de browser sturen — wel
+ * altijd loggen server-side. display_errors staat uit; alle PHP-fouten en
+ * onafgehandelde exceptions worden opgevangen en tonen een neutrale melding.
+ */
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+error_reporting(E_ALL);
+
+set_exception_handler(function (Throwable $e): void {
+    error_log('Onafgehandelde exception: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+    if (!headers_sent()) {
+        http_response_code(500);
+    }
+    exit('Er is een onverwachte fout opgetreden. Probeer het later opnieuw.');
+});
+
+// Bewust NIET omzetten naar ErrorException voor warnings/notices: dat zou een
+// onschuldige "undefined array key"-waarschuwing in een fatale, pagina-brede
+// crash veranderen. display_errors staat al uit, dus er lekt hoe dan ook niets
+// naar de browser — deze handler zorgt uitsluitend voor server-side logging.
+set_error_handler(function (int $severity, string $message, string $file, int $line): bool {
+    if (error_reporting() & $severity) {
+        error_log("PHP-fout [{$severity}]: {$message} in {$file}:{$line}");
+    }
+    return true;
+});
+
 require_once __DIR__ . '/assets/icons.php';
 
 define('DB_HOST', 'y11ovnrne4yk4p9zbhe39tti');
@@ -117,6 +145,16 @@ function init_schema(PDO $pdo): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
     $pdo->exec("INSERT IGNORE INTO voorraad_integration_settings (id) VALUES (1)");
+
+    // --- Brute-force-bescherming op inloggen (per e-mailadres) ---
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS voorraad_login_attempts (
+            identifier VARCHAR(150) PRIMARY KEY,
+            attempt_count INT NOT NULL DEFAULT 0,
+            last_attempt DATETIME NULL,
+            locked_until DATETIME NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
 
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS voorraad_sync_log (
@@ -348,6 +386,7 @@ function maybe_reset(PDO $pdo): void
         $pdo->exec("DELETE FROM voorraad_batches");
         $pdo->exec("DELETE FROM voorraad_movements");
         $pdo->exec("DELETE FROM voorraad_sync_log");
+        $pdo->exec("DELETE FROM voorraad_login_attempts");
         $pdo->exec("DELETE FROM voorraad_products");
         $pdo->exec("UPDATE voorraad_settings SET last_reset = NOW() WHERE id = 1");
         seed_data($pdo);
@@ -359,6 +398,19 @@ migrate_columns($pdo);
 seed_data($pdo);
 maybe_reset($pdo);
 
+// Sessiecookie hardening: httponly (geen JS-toegang), samesite=Lax (CSRF-defense
+// in depth naast het CSRF-token) en secure zodra het verzoek via HTTPS binnenkomt
+// (o.a. achter een reverse proxy die X-Forwarded-Proto zet).
+$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path'     => BASE . '/',
+    'domain'   => '',
+    'secure'   => $isHttps,
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
 
 function auth_check(): void
@@ -473,6 +525,70 @@ function verifyCSRF(): void
         http_response_code(403);
         exit('Ongeldige aanvraag');
     }
+}
+
+const LOGIN_MAX_ATTEMPTS   = 5;
+const LOGIN_LOCKOUT_MINUTES = 15;
+
+/**
+ * Brute-force-bescherming op inloggen: houdt per identifier (e-mailadres,
+ * lowercased) een teller + lockout-tijdstip bij in voorraad_login_attempts.
+ * Retourneert een foutmelding als de identifier momenteel geblokkeerd is,
+ * of null als inloggen mag worden geprobeerd.
+ */
+function loginLockoutMessage(PDO $pdo, string $identifier): ?string
+{
+    $identifier = strtolower(trim($identifier));
+    if ($identifier === '') {
+        return null;
+    }
+    $stmt = $pdo->prepare('SELECT locked_until FROM voorraad_login_attempts WHERE identifier = ?');
+    $stmt->execute([$identifier]);
+    $lockedUntil = $stmt->fetchColumn();
+    if ($lockedUntil && strtotime((string) $lockedUntil) > time()) {
+        $minutesLeft = max(1, (int) ceil((strtotime((string) $lockedUntil) - time()) / 60));
+        return "Te veel mislukte inlogpogingen. Probeer het over {$minutesLeft} minuut/minuten opnieuw.";
+    }
+    return null;
+}
+
+/**
+ * Registreert een mislukte inlogpoging en zet, bij het bereiken van de
+ * drempel, een tijdelijke lockout. Idempotent/atomisch via INSERT ... ON
+ * DUPLICATE KEY UPDATE (geen race tussen gelijktijdige requests van dezelfde
+ * identifier).
+ */
+function registerFailedLogin(PDO $pdo, string $identifier): void
+{
+    $identifier = strtolower(trim($identifier));
+    if ($identifier === '') {
+        return;
+    }
+    // Let op: MySQL evalueert de assignments in ON DUPLICATE KEY UPDATE van
+    // links naar rechts, dus `attempt_count` in de IF() hieronder is op dat
+    // moment al de zojuist opgehoogde (nieuwe) waarde — geen extra +1 nodig.
+    $stmt = $pdo->prepare('
+        INSERT INTO voorraad_login_attempts (identifier, attempt_count, last_attempt, locked_until)
+        VALUES (?, 1, NOW(), NULL)
+        ON DUPLICATE KEY UPDATE
+            attempt_count = attempt_count + 1,
+            last_attempt = NOW(),
+            locked_until = IF(attempt_count >= ?, DATE_ADD(NOW(), INTERVAL ? MINUTE), locked_until)
+    ');
+    $stmt->execute([$identifier, LOGIN_MAX_ATTEMPTS, LOGIN_LOCKOUT_MINUTES]);
+}
+
+/**
+ * Reset de teller na een geslaagde login.
+ */
+function resetLoginAttempts(PDO $pdo, string $identifier): void
+{
+    $identifier = strtolower(trim($identifier));
+    if ($identifier === '') {
+        return;
+    }
+    $stmt = $pdo->prepare('DELETE FROM voorraad_login_attempts WHERE identifier = ?');
+    $stmt->execute([$identifier]);
 }
 
 /**

@@ -16,12 +16,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($email === '' || $pass === '') {
         $error = 'Vul e-mailadres en wachtwoord in.';
+    } elseif (($lockoutMsg = loginLockoutMessage($pdo, $email)) !== null) {
+        $error = $lockoutMsg;
     } else {
         $stmt = $pdo->prepare('SELECT * FROM voorraad_users WHERE email = ? LIMIT 1');
         $stmt->execute([$email]);
         $user = $stmt->fetch();
 
         if ($user !== false && $user['password_hash'] && password_verify($pass, (string) $user['password_hash'])) {
+            resetLoginAttempts($pdo, $email);
             session_regenerate_id(true);
             $_SESSION['user_id']    = (int) $user['id'];
             $_SESSION['user_name']  = (string) $user['name'];
@@ -30,6 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: ' . BASE . '/index.php');
             exit;
         }
+        registerFailedLogin($pdo, $email);
         $error = 'Ongeldige inloggegevens.';
     }
 }
