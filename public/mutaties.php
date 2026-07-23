@@ -41,11 +41,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'mutat
                 $pdo->commit();
                 $message = 'Mutatie geregistreerd: ' . ($type === 'in' ? '+' : '-') . $qty . ' voor "' . $result['product']['name']
                     . '" — nieuwe voorraadpositie: ' . $result['new_quantity'] . '.';
-            } catch (Throwable $e) {
+            } catch (RuntimeException $e) {
+                // Verwachte, veilige business-regel-melding (bv. "onvoldoende voorraad") — mag getoond worden.
                 if ($pdo->inTransaction()) {
                     $pdo->rollBack();
                 }
                 $message = $e->getMessage();
+                $msgType = 'error';
+            } catch (Throwable $e) {
+                // Onverwachte fout (bv. DB-verbindingsprobleem): nooit de ruwe foutmelding tonen,
+                // wel server-side loggen.
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                error_log('[Voorraadbeheer] Mutatie mislukt: ' . $e->getMessage());
+                $message = 'Mutatie kon niet worden verwerkt door een onverwachte fout. Probeer het opnieuw.';
                 $msgType = 'error';
             }
         }

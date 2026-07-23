@@ -67,15 +67,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 try {
                     if ($id > 0) {
-                        $stmt = $pdo->prepare('UPDATE voorraad_products SET name=?, sku=?, category=?, quantity=?, min_stock=?, max_stock=?, reorder_qty=?, location=?, unit_price=?, purchase_price=?, supplier_name=?, supplier_email=?, status=? WHERE id=?');
-                        $stmt->execute([$name, $sku, $category, $qty, $minStock, $maxStock, $reorder, $location, $unitPrice, $purchasePrice, $supplierName, $supplierEmail, $status, $id]);
-                        $message = 'Artikel "' . $name . '" bijgewerkt.';
+                        // Rij locken (SELECT ... FOR UPDATE) binnen een transactie vóórdat de
+                        // hoeveelheid wordt overschreven: dit voorkomt dat dit formulier een
+                        // gelijktijdige voorraadmutatie (mutaties.php/bevestig.php, die dezelfde
+                        // rij-lock gebruiken via applyStockMutation()) overschrijft met een
+                        // verouderde waarde ("lost update"). Een eventuele handmatige
+                        // hoeveelheidswijziging wordt bovendien als mutatie gelogd, zodat de
+                        // mutatiehistorie een volledige/kloppende audit trail blijft.
+                        $pdo->beginTransaction();
+                        $lockStmt = $pdo->prepare('SELECT quantity FROM voorraad_products WHERE id = ? FOR UPDATE');
+                        $lockStmt->execute([$id]);
+                        $oldQty = $lockStmt->fetchColumn();
+
+                        if ($oldQty === false) {
+                            $pdo->rollBack();
+                            $message = 'Artikel niet gevonden.';
+                            $msgType = 'error';
+                        } else {
+                            $stmt = $pdo->prepare('UPDATE voorraad_products SET name=?, sku=?, category=?, quantity=?, min_stock=?, max_stock=?, reorder_qty=?, location=?, unit_price=?, purchase_price=?, supplier_name=?, supplier_email=?, status=? WHERE id=?');
+                            $stmt->execute([$name, $sku, $category, $qty, $minStock, $maxStock, $reorder, $location, $unitPrice, $purchasePrice, $supplierName, $supplierEmail, $status, $id]);
+
+                            $delta = $qty - (int) $oldQty;
+                            if ($delta !== 0) {
+                                $mov = $pdo->prepare(
+                                    'INSERT INTO voorraad_movements (product_id, type, quantity, reference, notes, reason, actor)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?)'
+                                );
+                                $mov->execute([
+                                    $id,
+                                    $delta > 0 ? 'in' : 'uit',
+                                    abs($delta),
+                                    'HANDMATIG',
+                                    'Hoeveelheid aangepast via artikel-bewerkformulier.',
+                                    'correctie',
+                                    $user['name'],
+                                ]);
+                            }
+                            $pdo->commit();
+                            $message = 'Artikel "' . $name . '" bijgewerkt.';
+                        }
                     } else {
                         $stmt = $pdo->prepare('INSERT INTO voorraad_products (name, sku, category, quantity, min_stock, max_stock, reorder_qty, location, unit_price, purchase_price, supplier_name, supplier_email, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
                         $stmt->execute([$name, $sku, $category, $qty, $minStock, $maxStock, $reorder, $location, $unitPrice, $purchasePrice, $supplierName, $supplierEmail, $status]);
                         $message = 'Artikel "' . $name . '" toegevoegd.';
                     }
                 } catch (PDOException $e) {
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
                     $message = $e->getCode() === '23000' ? 'Deze SKU bestaat al bij een ander artikel.' : 'Databasefout bij opslaan.';
                     $msgType = 'error';
                 }
@@ -130,11 +169,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $ins->execute([$productId, $lot, $batchQty, $expiry]);
                     $pdo->commit();
                     $message = 'Batch/lot "' . $lot . '" geregistreerd en voorraad atomisch bijgewerkt (+' . $batchQty . ').';
-                } catch (Throwable $e) {
+                } catch (RuntimeException $e) {
+                    // Verwachte, veilige business-regel-melding — mag getoond worden.
                     if ($pdo->inTransaction()) {
                         $pdo->rollBack();
                     }
                     $message = 'Batch registreren mislukt: ' . $e->getMessage();
+                    $msgType = 'error';
+                } catch (Throwable $e) {
+                    // Onverwachte fout: nooit de ruwe foutmelding (SQL/paden) tonen, wel loggen.
+                    if ($pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    error_log('[Voorraadbeheer] Batch registreren mislukt: ' . $e->getMessage());
+                    $message = 'Batch registreren mislukt door een onverwachte fout. Probeer het opnieuw.';
                     $msgType = 'error';
                 }
             }
@@ -199,9 +247,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $unitP = max(0.0, (float) str_replace(',', '.', (string) ($data['unit_price'] ?? '0')));
                         $purP  = max(0.0, (float) str_replace(',', '.', (string) ($data['purchase_price'] ?? '0')));
 
-                        $find = $pdo->prepare('SELECT id FROM voorraad_products WHERE sku = ?');
+                        // FOR UPDATE: we zitten al binnen de import-transactie, dus dit locked de
+                        // rij tot de import commit/rollback doet — voorkomt dat deze bulk-update
+                        // een gelijktijdige voorraadmutatie overschrijft (zelfde bescherming als
+                        // het losse artikel-bewerkformulier hierboven).
+                        $find = $pdo->prepare('SELECT id, quantity FROM voorraad_products WHERE sku = ? FOR UPDATE');
                         $find->execute([$data['sku']]);
-                        $existingId = $find->fetchColumn();
+                        $existingRow = $find->fetch();
+                        $existingId = $existingRow ? $existingRow['id'] : false;
 
                         if ($existingId) {
                             $upd = $pdo->prepare('UPDATE voorraad_products SET name=?, category=?, quantity=?, min_stock=?, max_stock=?, location=?, unit_price=?, purchase_price=?, supplier_name=?, supplier_email=?, status=? WHERE id=?');
@@ -209,6 +262,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 $data['name'], $data['category'], $qty, $minS, $maxS, $data['location'] ?? '',
                                 $unitP, $purP, $data['supplier_name'] ?? '', $data['supplier_email'] ?? '', $rowStatus, $existingId,
                             ]);
+                            $qtyDelta = $qty - (int) $existingRow['quantity'];
+                            if ($qtyDelta !== 0) {
+                                $mov = $pdo->prepare(
+                                    'INSERT INTO voorraad_movements (product_id, type, quantity, reference, notes, reason, actor)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?)'
+                                );
+                                $mov->execute([
+                                    $existingId,
+                                    $qtyDelta > 0 ? 'in' : 'uit',
+                                    abs($qtyDelta),
+                                    'CSV-IMPORT',
+                                    "Hoeveelheid aangepast via CSV-bulkimport (rij {$rowNum}).",
+                                    'correctie',
+                                    $user['name'],
+                                ]);
+                            }
                             $updated++;
                         } else {
                             $ins = $pdo->prepare('INSERT INTO voorraad_products (name, sku, category, quantity, min_stock, max_stock, location, unit_price, purchase_price, supplier_name, supplier_email, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
@@ -229,7 +298,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } catch (Throwable $e) {
                     $pdo->rollBack();
                     fclose($handle);
-                    $message = 'CSV-import volledig teruggedraaid door een fout: ' . $e->getMessage();
+                    error_log('[Voorraadbeheer] CSV-import mislukt: ' . $e->getMessage());
+                    $message = 'CSV-import volledig teruggedraaid door een onverwachte fout. Controleer het bestand en probeer het opnieuw.';
                     $msgType = 'error';
                 }
             }

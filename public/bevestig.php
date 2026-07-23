@@ -45,11 +45,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'confi
             // Herlaad de proposal-gegevens voor de weergave hieronder.
             $stmt->execute([$token]);
             $proposal = $stmt->fetch();
-        } catch (Throwable $e) {
+        } catch (RuntimeException $e) {
+            // Verwachte, veilige business-regel-melding — mag getoond worden (ook op deze
+            // publieke, niet-ingelogde pagina).
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
             }
             $notice = 'Bevestigen mislukt: ' . $e->getMessage();
+            $noticeType = 'error';
+        } catch (Throwable $e) {
+            // Onverwachte fout: dit is een publieke, niet-ingelogde pagina — nooit paden/SQL
+            // lekken naar een anonieme bezoeker. Wel server-side loggen.
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('[Voorraadbeheer] Magic-link bevestiging mislukt: ' . $e->getMessage());
+            $notice = 'Bevestigen mislukt door een onverwachte fout. Probeer het later opnieuw.';
             $noticeType = 'error';
         }
     }
