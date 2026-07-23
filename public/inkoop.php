@@ -24,6 +24,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$product) {
                 $message = 'Artikel niet gevonden.';
                 $msgType = 'error';
+            } elseif (hasOpenProposal($pdo, $productId)) {
+                $message = 'Voor "' . $product['name'] . '" staat al een openstaand inkoopvoorstel — wacht op bevestiging of laat het bestaande voorstel eerst verlopen.';
+                $msgType = 'error';
             } else {
                 $shortage = (int) $product['min_stock'] * 2 - (int) $product['quantity'];
                 $proposedQty = (int) $product['reorder_qty'] > 0 ? (int) $product['reorder_qty'] : max(1, $shortage);
@@ -94,7 +97,9 @@ $canManage = canManageProducts($user['role']);
                         <span class="block text-xs text-slate-400"><?= e($p['supplier_email'] ?: '-') ?></span>
                     </td>
                     <td>
-                        <?php if ($canManage): ?>
+                        <?php if (hasOpenProposal($pdo, (int) $p['id'])): ?>
+                            <span class="hz-badge hz-badge--orange">Al aangevraagd</span>
+                        <?php elseif ($canManage): ?>
                         <form method="post">
                             <?= csrfField() ?>
                             <input type="hidden" name="action" value="create_proposal">

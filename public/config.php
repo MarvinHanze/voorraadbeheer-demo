@@ -701,6 +701,53 @@ function generateMagicLinkToken(): string
 }
 
 /**
+ * Controleert of er al een openstaand (nog niet bevestigd/verlopen) inkoopvoorstel
+ * bestaat voor dit artikel. Voorkomt dat dezelfde lage voorraad per ongeluk
+ * meerdere keren achter elkaar tot een nieuw voorstel/magic link leidt.
+ */
+function hasOpenProposal(PDO $pdo, int $productId): bool
+{
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) FROM voorraad_email_log WHERE product_id = ? AND type = 'inkoopvoorstel' AND status = 'verzonden'"
+    );
+    $stmt->execute([$productId]);
+    return ((int) $stmt->fetchColumn()) > 0;
+}
+
+/**
+ * Voorraad + voorraadwaarde per magazijnlocatie, geaggregeerd over alle
+ * actieve/uitverkochte artikelen (locatiebeheer-rapportage voor het dashboard).
+ * Artikelen zonder locatie worden gebundeld onder "Onbekend/geen locatie".
+ *
+ * @return array<int, array{location: string, product_count: int, total_qty: int, total_value: float, low_stock_count: int}>
+ */
+function stockByLocation(PDO $pdo): array
+{
+    $rows = $pdo->query("
+        SELECT
+            CASE WHEN location = '' THEN 'Onbekend / geen locatie' ELSE location END AS location,
+            COUNT(*) AS product_count,
+            COALESCE(SUM(quantity), 0) AS total_qty,
+            COALESCE(SUM(quantity * purchase_price), 0) AS total_value,
+            COALESCE(SUM(CASE WHEN quantity < min_stock THEN 1 ELSE 0 END), 0) AS low_stock_count
+        FROM voorraad_products
+        WHERE status != 'stopgezet'
+        GROUP BY location
+        ORDER BY total_value DESC
+    ")->fetchAll();
+
+    foreach ($rows as &$r) {
+        $r['product_count']    = (int) $r['product_count'];
+        $r['total_qty']        = (int) $r['total_qty'];
+        $r['total_value']      = (float) $r['total_value'];
+        $r['low_stock_count']  = (int) $r['low_stock_count'];
+    }
+    unset($r);
+
+    return $rows;
+}
+
+/**
  * Maakt een "trigger-based" inkoopvoorstel aan: schrijft een gesimuleerde
  * e-mail (met magic link) weg in voorraad_email_log. Er wordt GEEN echte
  * e-mail verzonden — dit is uitsluitend een demo/simulatie, altijd zo

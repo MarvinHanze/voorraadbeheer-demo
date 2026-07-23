@@ -22,6 +22,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'creat
         if (!$product) {
             $message = 'Artikel niet gevonden.';
             $msgType = 'error';
+        } elseif (hasOpenProposal($pdo, $productId)) {
+            $message = 'Voor "' . $product['name'] . '" staat al een openstaand inkoopvoorstel — wacht op bevestiging of laat het bestaande voorstel eerst verlopen.';
+            $msgType = 'error';
         } else {
             $shortage = (int) $product['min_stock'] * 2 - (int) $product['quantity'];
             $proposedQty = (int) $product['reorder_qty'] > 0 ? (int) $product['reorder_qty'] : max(1, $shortage);
@@ -123,6 +126,9 @@ $recentMovements = $pdo->query("
 
 // ── Openstaande inkoopvoorstellen ───────────────────────────────────────────
 $openProposals = (int) $pdo->query("SELECT COUNT(*) FROM voorraad_email_log WHERE status = 'verzonden'")->fetchColumn();
+
+// ── Voorraad per magazijnlocatie (locatiebeheer-rapportage) ────────────────
+$locationReport = stockByLocation($pdo);
 
 renderPageStart('Dashboard', 'index');
 renderFlash($message, $msgType);
@@ -267,7 +273,9 @@ renderFlash($message, $msgType);
                         <p class="font-medium text-slate-800"><?= e($p['name']) ?></p>
                         <p class="text-xs text-slate-400"><?= (int) $p['quantity'] ?> / min. <?= (int) $p['min_stock'] ?> · <?= e($p['location']) ?></p>
                     </div>
-                    <?php if (canManageProducts($user['role'])): ?>
+                    <?php if (hasOpenProposal($pdo, (int) $p['id'])): ?>
+                        <span class="hz-badge hz-badge--orange shrink-0">Al aangevraagd</span>
+                    <?php elseif (canManageProducts($user['role'])): ?>
                     <form method="post" class="shrink-0">
                         <?= csrfField() ?>
                         <input type="hidden" name="action" value="create_proposal">
@@ -281,6 +289,40 @@ renderFlash($message, $msgType);
                 <?php endforeach; ?>
             </ul>
         <?php endif; ?>
+    </div>
+</div>
+
+<!-- ── Voorraad per magazijnlocatie (locatiebeheer) ─────────────────────── -->
+<div class="hz-card mb-8">
+    <div class="hz-card__header">
+        <h2 class="text-base font-semibold text-slate-900">Voorraad per magazijnlocatie</h2>
+        <a href="<?= BASE ?>/artikelen.php" class="text-sm text-brand-700 hover:underline">Filter artikelen op locatie &rarr;</a>
+    </div>
+    <p class="text-sm text-slate-500 mb-3">Aantal artikelen, totale voorraadpositie en -waarde per locatie (excl. stopgezette artikelen).</p>
+    <div class="overflow-x-auto">
+        <table class="hz-table">
+            <thead><tr><th>Locatie</th><th>Artikelen</th><th>Totaal aantal</th><th>Voorraadwaarde</th><th>Lage voorraad</th></tr></thead>
+            <tbody>
+            <?php foreach ($locationReport as $loc): ?>
+                <tr>
+                    <td class="font-medium text-slate-800"><?= e($loc['location']) ?></td>
+                    <td><?= $loc['product_count'] ?></td>
+                    <td><?= $loc['total_qty'] ?> st.</td>
+                    <td class="font-semibold"><?= nl_euro($loc['total_value']) ?></td>
+                    <td>
+                        <?php if ($loc['low_stock_count'] > 0): ?>
+                            <span class="hz-badge hz-badge--red"><?= $loc['low_stock_count'] ?></span>
+                        <?php else: ?>
+                            <span class="text-slate-300">0</span>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+            <?php if (!$locationReport): ?>
+                <tr><td colspan="5" class="text-center text-slate-400">Geen artikelen.</td></tr>
+            <?php endif; ?>
+            </tbody>
+        </table>
     </div>
 </div>
 
