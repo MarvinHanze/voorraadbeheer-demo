@@ -143,13 +143,18 @@ $greeting = $hourNow < 12 ? 'Goedemorgen' : ($hourNow < 18 ? 'Goedemiddag' : 'Go
 <!-- ── Welkomstbanner ────────────────────────────────────────────────── -->
 <div class="hz-welcome-banner hz-reveal">
     <div class="hz-welcome-banner__content flex flex-wrap items-center justify-between gap-4">
-        <div>
-            <h1><?= e($greeting) ?>, <?= e(explode(' ', $user['name'])[0]) ?> &#128075;</h1>
-            <p><?= e(nl_datum(date('Y-m-d H:i:s'), 'd-m-Y')) ?> &middot; <?= $totalProducts ?> artikelen in beheer over <?= count($locations) ?> locaties</p>
+        <div class="flex items-center gap-3">
+            <div class="hz-welcome-banner__icon">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+            </div>
+            <div>
+                <h1><?= e($greeting) ?>, <?= e(explode(' ', $user['name'])[0]) ?></h1>
+                <p><?= e(nl_datum(date('Y-m-d H:i:s'), 'd-m-Y')) ?> &middot; <?= $totalProducts ?> artikelen in beheer over <?= count($locations) ?> locaties</p>
+            </div>
         </div>
-        <div class="text-right">
-            <p class="text-xs uppercase tracking-wide" style="color:rgba(255,255,255,.65);">Totale voorraadwaarde</p>
-            <p class="text-2xl font-bold"><?= nl_euro($totalValueBuy) ?></p>
+        <div class="hz-welcome-banner__stat">
+            <p class="text-xs uppercase tracking-wide">Totale voorraadwaarde</p>
+            <p><?= nl_euro($totalValueBuy) ?></p>
         </div>
     </div>
 </div>

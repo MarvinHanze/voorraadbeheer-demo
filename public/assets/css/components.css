@@ -158,16 +158,21 @@
 .hz-stat-icon--emerald { background:#d1fae5; color:#047857; }
 .hz-stat-icon--amber { background:#fef3c7; color:#b45309; }
 .hz-welcome-banner {
-  border-radius:1rem; padding:1.75rem 2rem; margin-bottom:1.5rem; color:#fff; position:relative; overflow:hidden;
-  background:linear-gradient(135deg, #1e293b 0%, #334155 55%, #b45309 130%);
+  border-radius:1rem; padding:1.5rem 2rem; margin-bottom:1.5rem; color:#fff; position:relative; overflow:hidden;
+  background:#0f172a;
 }
 .hz-welcome-banner::before {
-  content:""; position:absolute; inset:0;
-  background:radial-gradient(circle at 85% 20%, rgba(245,158,11,.35), transparent 55%);
+  content:""; position:absolute; top:-60%; right:-8%; width:380px; height:380px; border-radius:50%;
+  background:radial-gradient(circle, rgba(245,158,11,.28), transparent 70%);
+  pointer-events:none;
 }
 .hz-welcome-banner__content { position:relative; z-index:1; }
-.hz-welcome-banner h1 { font-size:1.5rem; font-weight:700; margin:0 0 .3rem; }
-.hz-welcome-banner p { color:rgba(255,255,255,.75); font-size:.9rem; margin:0; }
+.hz-welcome-banner__icon { width:44px; height:44px; border-radius:12px; background:rgba(245,158,11,.15); color:#fbbf24; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.hz-welcome-banner h1 { font-size:1.3rem; font-weight:700; margin:0 0 .2rem; }
+.hz-welcome-banner p { color:rgba(255,255,255,.6); font-size:.85rem; margin:0; }
+.hz-welcome-banner__stat { background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12); border-radius:.75rem; padding:.7rem 1.25rem; text-align:right; }
+.hz-welcome-banner__stat p:first-child { color:rgba(255,255,255,.55); }
+.hz-welcome-banner__stat p:last-child { font-size:1.4rem; font-weight:700; }
 .hz-chart-card canvas { max-height:220px; }
 
 @keyframes hz-fade-up { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
