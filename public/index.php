@@ -45,6 +45,7 @@ $totalValueSale  = 0.0;
 $totalValueBuy   = 0.0;
 $locations       = [];
 $categories      = [];
+$categoryValue   = [];
 
 foreach ($products as $p) {
     $qty = (int) $p['quantity'];
@@ -60,7 +61,9 @@ foreach ($products as $p) {
         $locations[$p['location']] = true;
     }
     $categories[$p['category']] = true;
+    $categoryValue[$p['category']] = ($categoryValue[$p['category']] ?? 0) + $qty * (float) $p['purchase_price'];
 }
+arsort($categoryValue);
 
 // ── Voorraadwaarderapport: top artikelen op basis van (aantal x inkoopprijs) ─
 $valueReport = $products;
@@ -132,10 +135,27 @@ $locationReport = stockByLocation($pdo);
 
 renderPageStart('Dashboard', 'index');
 renderFlash($message, $msgType);
+
+$hourNow = (int) date('G');
+$greeting = $hourNow < 12 ? 'Goedemorgen' : ($hourNow < 18 ? 'Goedemiddag' : 'Goedenavond');
 ?>
 
+<!-- ── Welkomstbanner ────────────────────────────────────────────────── -->
+<div class="hz-welcome-banner hz-reveal">
+    <div class="hz-welcome-banner__content flex flex-wrap items-center justify-between gap-4">
+        <div>
+            <h1><?= e($greeting) ?>, <?= e(explode(' ', $user['name'])[0]) ?> &#128075;</h1>
+            <p><?= e(nl_datum(date('Y-m-d H:i:s'), 'd-m-Y')) ?> &middot; <?= $totalProducts ?> artikelen in beheer over <?= count($locations) ?> locaties</p>
+        </div>
+        <div class="text-right">
+            <p class="text-xs uppercase tracking-wide" style="color:rgba(255,255,255,.65);">Totale voorraadwaarde</p>
+            <p class="text-2xl font-bold"><?= nl_euro($totalValueBuy) ?></p>
+        </div>
+    </div>
+</div>
+
 <!-- ── Proactieve notificaties ─────────────────────────────────────────── -->
-<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6 hz-reveal" style="animation-delay:.05s;">
     <div class="flex items-center gap-3 px-4 py-3 rounded-lg border <?= $lowStock > 0 ? 'bg-red-50 border-red-200 text-red-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800' ?>">
         <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
         <p class="text-sm"><strong><?= $lowStock ?></strong> artikel<?= $lowStock === 1 ? '' : 'en' ?> onder minimumvoorraad — <a href="<?= BASE ?>/inkoop.php" class="underline">bekijk inkoopvoorstellen</a></p>
@@ -148,31 +168,51 @@ renderFlash($message, $msgType);
 
 <!-- ── Stat cards ─────────────────────────────────────────────────────── -->
 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-    <div class="hz-card hz-card--stat">
+    <div class="hz-card hz-card--stat hz-card--hover hz-reveal" style="animation-delay:.1s;">
+        <div class="hz-stat-icon hz-stat-icon--blue"><svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg></div>
         <p class="hz-card__label">Totaal Artikelen</p>
         <p class="hz-card__value"><?= $totalProducts ?></p>
         <p class="text-sm text-slate-500 mt-1"><?= count($categories) ?> categorieën</p>
     </div>
-    <div class="hz-card hz-card--stat">
+    <div class="hz-card hz-card--stat hz-card--hover hz-reveal" style="animation-delay:.15s;">
+        <div class="hz-stat-icon hz-stat-icon--red"><svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg></div>
         <p class="hz-card__label">Lage Voorraad</p>
         <p class="hz-card__value <?= $lowStock > 0 ? 'text-red-600' : '' ?>"><?= $lowStock ?></p>
         <p class="text-sm text-slate-500 mt-1"><?= $openProposals ?> openstaand inkoopvoorstel<?= $openProposals === 1 ? '' : 'len' ?></p>
     </div>
-    <div class="hz-card hz-card--stat">
+    <div class="hz-card hz-card--stat hz-card--hover hz-reveal" style="animation-delay:.2s;">
+        <div class="hz-stat-icon hz-stat-icon--emerald"><svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V6m0 2v8m0 0v2m0-2c-1.11 0-2.08-.402-2.599-1"/></svg></div>
         <p class="hz-card__label"><?= termTooltip('Voorraadwaarde', 'Som van aantal × inkoopprijs, over alle artikelen — het "Voorraadwaarderapport".') ?></p>
         <p class="hz-card__value"><?= nl_euro($totalValueBuy) ?></p>
         <p class="text-sm text-slate-500 mt-1">verkoopwaarde <?= nl_euro($totalValueSale) ?></p>
     </div>
-    <div class="hz-card hz-card--stat">
+    <div class="hz-card hz-card--stat hz-card--hover hz-reveal" style="animation-delay:.25s;">
+        <div class="hz-stat-icon hz-stat-icon--amber"><svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg></div>
         <p class="hz-card__label"><?= termTooltip('Omloopsnelheid', 'Gemiddeld aantal keer dat de voorraad van een artikel de afgelopen 90 dagen is "omgezet" via verkoop, t.o.v. de huidige voorraadpositie.') ?></p>
         <p class="hz-card__value"><?= number_format($avgTurnover, 2, ',', '.') ?></p>
         <p class="text-sm text-slate-500 mt-1"><?= count($locations) ?> magazijnlocaties</p>
     </div>
 </div>
 
+<!-- ── Grafieken ──────────────────────────────────────────────────────── -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+    <div class="hz-card hz-chart-card hz-reveal" style="animation-delay:.3s;">
+        <div class="hz-card__header">
+            <h2 class="text-base font-semibold text-slate-900">Voorraadwaarde per categorie</h2>
+        </div>
+        <canvas id="chartCategory" role="img" aria-label="Donutgrafiek van voorraadwaarde per categorie"></canvas>
+    </div>
+    <div class="hz-card hz-chart-card hz-reveal" style="animation-delay:.35s;">
+        <div class="hz-card__header">
+            <h2 class="text-base font-semibold text-slate-900">Voorraadwaarde per magazijnlocatie</h2>
+        </div>
+        <canvas id="chartLocation" role="img" aria-label="Staafgrafiek van voorraadwaarde per magazijnlocatie"></canvas>
+    </div>
+</div>
+
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
     <!-- ── Voorraadwaarderapport ──────────────────────────────────────── -->
-    <div class="hz-card">
+    <div class="hz-card hz-reveal" style="animation-delay:.4s;">
         <div class="hz-card__header">
             <h2 class="text-base font-semibold text-slate-900">Voorraadwaarderapport (top 8)</h2>
         </div>
@@ -200,7 +240,7 @@ renderFlash($message, $msgType);
     </div>
 
     <!-- ── Omloopsnelheid top 5 ───────────────────────────────────────── -->
-    <div class="hz-card">
+    <div class="hz-card hz-reveal" style="animation-delay:.45s;">
         <div class="hz-card__header">
             <h2 class="text-base font-semibold text-slate-900">Omloopsnelheid (top 5, laatste 90 dagen)</h2>
         </div>
@@ -230,7 +270,7 @@ renderFlash($message, $msgType);
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
     <!-- ── Top derving/verloren artikelen ─────────────────────────────── -->
-    <div class="hz-card border-l-4 border-red-400">
+    <div class="hz-card border-l-4 border-red-400 hz-reveal" style="animation-delay:.5s;">
         <div class="hz-card__header">
             <h2 class="text-base font-semibold text-slate-900">Top derving/verloren artikelen</h2>
         </div>
@@ -259,7 +299,7 @@ renderFlash($message, $msgType);
     </div>
 
     <!-- ── Lage voorraad + trigger-based inkoopvoorstel ────────────────── -->
-    <div class="hz-card border-l-4 border-amber-400">
+    <div class="hz-card border-l-4 border-amber-400 hz-reveal" style="animation-delay:.55s;">
         <div class="hz-card__header">
             <h2 class="text-base font-semibold text-slate-900">Lage voorraad — actie vereist</h2>
         </div>
@@ -293,7 +333,7 @@ renderFlash($message, $msgType);
 </div>
 
 <!-- ── Voorraad per magazijnlocatie (locatiebeheer) ─────────────────────── -->
-<div class="hz-card mb-8">
+<div class="hz-card mb-8 hz-reveal" style="animation-delay:.6s;">
     <div class="hz-card__header">
         <h2 class="text-base font-semibold text-slate-900">Voorraad per magazijnlocatie</h2>
         <a href="<?= BASE ?>/artikelen.php" class="text-sm text-brand-700 hover:underline">Filter artikelen op locatie &rarr;</a>
@@ -327,7 +367,7 @@ renderFlash($message, $msgType);
 </div>
 
 <!-- ── Recente mutaties ───────────────────────────────────────────────── -->
-<div class="hz-card mb-8">
+<div class="hz-card mb-8 hz-reveal" style="animation-delay:.65s;">
     <div class="hz-card__header">
         <h2 class="text-base font-semibold text-slate-900">Recente voorraadmutaties</h2>
         <a href="<?= BASE ?>/mutaties.php" class="text-sm text-brand-700 hover:underline">Alle mutaties &rarr;</a>
@@ -357,5 +397,86 @@ renderFlash($message, $msgType);
 <footer class="mt-4 pb-8 text-center text-sm text-slate-400">
     Voorraadbeheer Demo &middot; PHP 8.2 + Apache + MySQL &middot; alle inkoopvoorstellen/e-mails/synchronisaties zijn gesimuleerd (geen echte externe koppelingen)
 </footer>
+
+<?php
+$jsonFlags = JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP;
+$categoryLabels = array_map('strval', array_keys($categoryValue));
+$categoryData   = array_map(fn($v) => round($v, 2), array_values($categoryValue));
+$locationLabels = array_column($locationReport, 'location');
+$locationData   = array_map(fn($v) => round((float) $v, 2), array_column($locationReport, 'total_value'));
+?>
+<script>
+(function () {
+    if (typeof Chart === 'undefined') return;
+    var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var animation = reduceMotion ? false : { duration: 700, easing: 'easeOutQuart' };
+    var palette = ['#2563eb', '#d97706', '#059669', '#dc2626', '#7c3aed', '#0891b2', '#64748b'];
+
+    var categoryCtx = document.getElementById('chartCategory');
+    if (categoryCtx) {
+        new Chart(categoryCtx, {
+            type: 'doughnut',
+            data: {
+                labels: <?= json_encode($categoryLabels, $jsonFlags) ?>,
+                datasets: [{
+                    data: <?= json_encode($categoryData, $jsonFlags) ?>,
+                    backgroundColor: palette,
+                    borderColor: '#ffffff',
+                    borderWidth: 2,
+                }]
+            },
+            options: {
+                animation: animation,
+                plugins: {
+                    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+                    tooltip: {
+                        callbacks: {
+                            label: function (ctx) {
+                                var v = ctx.parsed || 0;
+                                return ctx.label + ': € ' + v.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    var locationCtx = document.getElementById('chartLocation');
+    if (locationCtx) {
+        new Chart(locationCtx, {
+            type: 'bar',
+            data: {
+                labels: <?= json_encode($locationLabels, $jsonFlags) ?>,
+                datasets: [{
+                    label: 'Voorraadwaarde',
+                    data: <?= json_encode($locationData, $jsonFlags) ?>,
+                    backgroundColor: '#2563eb',
+                    borderRadius: 6,
+                    maxBarThickness: 34,
+                }]
+            },
+            options: {
+                animation: animation,
+                indexAxis: 'y',
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function (ctx) {
+                                var v = ctx.parsed.x || 0;
+                                return '€ ' + v.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: { ticks: { callback: function (v) { return '€ ' + v.toLocaleString('nl-NL'); } } }
+                }
+            }
+        });
+    }
+})();
+</script>
 
 <?php renderPageEnd(); ?>
