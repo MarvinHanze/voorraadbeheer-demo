@@ -165,6 +165,36 @@ function renderPageStart(string $title, string $active): void
                 <?php endforeach; ?>
             </div>
             <div class="flex items-center gap-3 shrink-0">
+                <div class="hz-dropdown">
+                    <button type="button" class="hz-icon-btn" data-hz-dropdown-trigger="themePickerMenu" aria-label="Thema wijzigen" title="Thema">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 011.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C22 6.012 17.461 2 12 2z"/></svg>
+                    </button>
+                    <div class="hz-dropdown__menu hz-dropdown__menu--picker" id="themePickerMenu" data-hz-picker="theme">
+                        <button type="button" data-hz-picker-value=""><span class="hz-picker-swatch" style="background:#2563eb;"></span> Klassiek Blauw</button>
+                        <button type="button" data-hz-picker-value="dark"><span class="hz-picker-swatch" style="background:#0f172a;"></span> Donker</button>
+                        <button type="button" data-hz-picker-value="emerald"><span class="hz-picker-swatch" style="background:#059669;"></span> Warehouse Groen</button>
+                        <button type="button" data-hz-picker-value="violet"><span class="hz-picker-swatch" style="background:#7c3aed;"></span> Modern Violet</button>
+                        <button type="button" data-hz-picker-value="rose"><span class="hz-picker-swatch" style="background:#e11d48;"></span> Zacht Roze</button>
+                        <button type="button" data-hz-picker-value="amber"><span class="hz-picker-swatch" style="background:#d97706;"></span> Industrieel Amber</button>
+                        <button type="button" data-hz-picker-value="teal"><span class="hz-picker-swatch" style="background:#0d9488;"></span> Fris Teal</button>
+                        <button type="button" data-hz-picker-value="contrast"><span class="hz-picker-swatch" style="background:#000;"></span> Hoog Contrast</button>
+                    </div>
+                </div>
+                <div class="hz-dropdown">
+                    <button type="button" class="hz-icon-btn hidden sm:inline-flex" data-hz-dropdown-trigger="fontPickerMenu" aria-label="Lettertype wijzigen" title="Lettertype">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+                    </button>
+                    <div class="hz-dropdown__menu hz-dropdown__menu--picker" id="fontPickerMenu" data-hz-picker="font">
+                        <button type="button" data-hz-picker-value="">Systeemlettertype</button>
+                        <button type="button" data-hz-picker-value="inter" style="font-family:'Inter',sans-serif;">Inter</button>
+                        <button type="button" data-hz-picker-value="plex" style="font-family:'IBM Plex Sans',sans-serif;">IBM Plex Sans</button>
+                        <button type="button" data-hz-picker-value="work" style="font-family:'Work Sans',sans-serif;">Work Sans</button>
+                        <button type="button" data-hz-picker-value="manrope" style="font-family:'Manrope',sans-serif;">Manrope</button>
+                        <button type="button" data-hz-picker-value="spacegrotesk" style="font-family:'Space Grotesk',sans-serif;">Space Grotesk</button>
+                        <button type="button" data-hz-picker-value="dmsans" style="font-family:'DM Sans',sans-serif;">DM Sans</button>
+                        <button type="button" data-hz-picker-value="publicsans" style="font-family:'Public Sans',sans-serif;">Public Sans</button>
+                    </div>
+                </div>
                 <span class="hz-badge <?= roleBadgeClass($user['role']) ?> hidden md:inline-flex"><?= e(roleLabel($user['role'])) ?></span>
                 <span class="text-sm text-slate-500 hidden lg:block"><?= e($user['name']) ?></span>
                 <a href="<?= BASE ?>/logout.php"

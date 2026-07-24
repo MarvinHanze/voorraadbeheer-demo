@@ -2,6 +2,8 @@
    Namespace: alle classes beginnen met "hz-" zodat dit veilig naast Tailwind
    (of andere CSS) in elke demo-app gebruikt kan worden zonder botsingen. */
 
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Work+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500;700&family=Public+Sans:wght@400;500;600;700&display=swap');
+
 :root {
   --hz-primary: #2563eb;
   --hz-primary-dark: #1d4ed8;
@@ -16,14 +18,71 @@
   --hz-radius: 0.5rem;
   --hz-shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
   --hz-shadow-lg: 0 10px 25px rgba(0,0,0,.12), 0 4px 10px rgba(0,0,0,.08);
+  --hz-font: ui-sans-serif, system-ui, sans-serif;
 }
+
+/* ==================== Thema's (8, kiesbaar via de thema-knop in de navbar) ====================
+   Alle thema's hergebruiken --hz-primary/--hz-bg/etc. zodat de hele bestaande componenten-
+   bibliotheek automatisch meekleurt. Statusbadges (--hz-badge--green/orange/red/gray) blijven
+   bewust vaste lichte pastelkleuren, ook in het donkere thema — vergelijkbaar met hoe GitHub/
+   Linear dark mode chips licht houden voor leesbaarheid i.p.v. ze te verdonkeren. */
 :root[data-theme="dark"] {
   --hz-bg: #0f172a;
   --hz-surface: #1e293b;
   --hz-border: #334155;
   --hz-text: #f1f5f9;
   --hz-text-muted: #94a3b8;
+  --hz-primary: #3b82f6;
+  --hz-primary-dark: #60a5fa;
+  --hz-danger: #f87171;
+  --hz-success: #4ade80;
+  --hz-warning: #fbbf24;
 }
+:root[data-theme="emerald"] { --hz-primary: #059669; --hz-primary-dark: #047857; }
+:root[data-theme="violet"] { --hz-primary: #7c3aed; --hz-primary-dark: #6d28d9; }
+:root[data-theme="rose"] { --hz-primary: #e11d48; --hz-primary-dark: #be123c; }
+:root[data-theme="amber"] { --hz-primary: #d97706; --hz-primary-dark: #b45309; }
+:root[data-theme="teal"] { --hz-primary: #0d9488; --hz-primary-dark: #0f766e; }
+:root[data-theme="contrast"] {
+  --hz-bg: #ffffff; --hz-surface: #ffffff; --hz-border: #000000; --hz-text: #000000; --hz-text-muted: #2b2b2b;
+  --hz-primary: #000000; --hz-primary-dark: #262626; --hz-shadow: none; --hz-shadow-lg: 0 0 0 2px #000;
+}
+
+/* ==================== Lettertypen (8, kiesbaar via de lettertype-knop) ==================== */
+:root[data-font="inter"] { --hz-font: 'Inter', sans-serif; }
+:root[data-font="plex"] { --hz-font: 'IBM Plex Sans', sans-serif; }
+:root[data-font="work"] { --hz-font: 'Work Sans', sans-serif; }
+:root[data-font="manrope"] { --hz-font: 'Manrope', sans-serif; }
+:root[data-font="spacegrotesk"] { --hz-font: 'Space Grotesk', sans-serif; }
+:root[data-font="dmsans"] { --hz-font: 'DM Sans', sans-serif; }
+:root[data-font="publicsans"] { --hz-font: 'Public Sans', sans-serif; }
+
+body { font-family: var(--hz-font); }
+
+/* Vangnet voor niet-standaardthema's: alle pagina's (artikelen/mutaties/instellingen/etc.)
+   stylen hun daadwerkelijke inhoud met Tailwinds vaste text-slate-*/bg-slate-*/border-slate-*-
+   classes, niet met --hz-*-variabelen — inclusief <body class="bg-slate-50 text-slate-800">
+   zelf. Zonder deze remap zou tekst op bv. het Donkere thema onleesbaar worden (donkere tekst
+   op een nu ook donkere achtergrond). Scoped op :root[data-theme] zodat het standaardthema
+   (geen attribuut) exact de oorspronkelijke Tailwind-kleuren behoudt. */
+:root[data-theme] body,
+:root[data-theme] .bg-slate-50 { background-color: var(--hz-bg) !important; }
+:root[data-theme] .bg-white { background-color: var(--hz-surface) !important; }
+:root[data-theme] .text-slate-900,
+:root[data-theme] .text-slate-800 { color: var(--hz-text) !important; }
+:root[data-theme] .text-slate-600,
+:root[data-theme] .text-slate-500,
+:root[data-theme] .text-slate-400,
+:root[data-theme] .text-slate-300 { color: var(--hz-text-muted) !important; }
+:root[data-theme] .border-slate-300,
+:root[data-theme] .border-slate-200,
+:root[data-theme] .border-slate-100 { border-color: var(--hz-border) !important; }
+
+/* --- Thema-/lettertype-kiezer: hergebruikt het bestaande .hz-dropdown-patroon --- */
+.hz-picker-swatch { display:inline-block; width:16px; height:16px; border-radius:5px; flex-shrink:0; border:1px solid rgba(0,0,0,.12); }
+.hz-dropdown__menu--picker { max-height:320px; overflow-y:auto; min-width:210px; }
+.hz-dropdown__menu--picker button { display:flex; align-items:center; gap:.6rem; }
+.hz-dropdown__menu button.hz-is-active { background:var(--hz-bg); color:var(--hz-primary); font-weight:700; }
 
 /* ==================== 1. Navigatie & Layout ==================== */
 

@@ -279,6 +279,40 @@
     });
   }
 
+  /* --- Thema-/lettertype-kiezer: hergebruikt .hz-dropdown open/close (initDropdowns),
+     vult hier alleen de selectie-logica aan (localStorage, data-theme/data-font op <html>). --- */
+  function initThemeFontPickers() {
+    qsa("[data-hz-picker]").forEach(function (menu) {
+      var kind = menu.getAttribute("data-hz-picker"); // "theme" of "font"
+      var attr = kind === "theme" ? "data-theme" : "data-font";
+      var storageKey = "hz-" + kind;
+
+      function apply(value) {
+        if (value) {
+          document.documentElement.setAttribute(attr, value);
+        } else {
+          document.documentElement.removeAttribute(attr);
+        }
+        qsa("[data-hz-picker-value]", menu).forEach(function (opt) {
+          opt.classList.toggle("hz-is-active", (opt.getAttribute("data-hz-picker-value") || "") === value);
+        });
+      }
+
+      var saved = "";
+      try { saved = localStorage.getItem(storageKey) || ""; } catch (e) { /* privémodus: geen opslag */ }
+      apply(saved);
+
+      qsa("[data-hz-picker-value]", menu).forEach(function (opt) {
+        opt.addEventListener("click", function () {
+          var value = opt.getAttribute("data-hz-picker-value") || "";
+          apply(value);
+          try { localStorage.setItem(storageKey, value); } catch (e) { /* privémodus */ }
+          menu.classList.remove("hz-is-open");
+        });
+      });
+    });
+  }
+
   /* --- Bevestigingsprompt bij destructieve/bulk-acties --- */
   function initConfirms() {
     qsa("[data-hz-confirm]").forEach(function (el) {
@@ -312,6 +346,7 @@
     initModals();
     initToastTriggers();
     initDropdowns();
+    initThemeFontPickers();
     initConfirms();
   });
 })();
